@@ -8,7 +8,6 @@ import numpy as np
 import dicom.UID
 import datetime
 from lmfit import *
-# import tqdm
 import matplotlib.pyplot as plt
 
 class DataWrapper:
@@ -28,7 +27,9 @@ class DataWrapper:
         for dirName,  subdirList,  fileList in os.walk(self.inputDir):
             for filename in fileList:
                 if ".dcm" in filename.lower(): 
-                    self.lstFilesDCM.append(os.path.join(dirName, filename))
+                    d=dicom.read_file(os.path.join(dirName, filename))      #read dicom tag to take mag images only
+                    if d.ImageType[2]=='M':
+                        self.lstFilesDCM.append(os.path.join(dirName, filename))
 
     def dataCheck01(self):
         print('')
@@ -181,7 +182,6 @@ class R2StarFitting:
         x = np.array([float(ii) for ii in self.TEs])
         y=self.ArrayDicom.reshape(self.nvxl,len(self.TEs))
         self.ArrayOutput=np.zeros((self.nvxl,3))
-        # for i in tqdm.tqdm(range(self.nvxl)):
         for i in range(self.nvxl):
             if np.mean(y[i,0:5]) < 10.0:
                 self.ArrayOutput[i] = 0
@@ -196,7 +196,7 @@ class R2StarFitting:
         print('')
 
 def main(argv):
-    inputFolder = r'C:\Users\User\Desktop\relaxometry\test_data\Mag_t1_fl2d_15p5o_graphcut_LEVER_minDelta_tra_bh_1'
+    inputFolder = r'C:\Users\User\Desktop\relaxometry\test_data_raw'
     outputFolder = r'C:\Users\User\Desktop\relaxometry\output'
     try:
         opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
@@ -211,7 +211,6 @@ def main(argv):
             inputFolder = arg
         elif opt in ("-o", "--ofile"):
             outputFolder = arg
-
     print( 'Input folder is "', inputFolder )
     print( 'Output folder is "', outputFolder )
     
@@ -221,6 +220,9 @@ def main(argv):
     r2sf.run()
     dw.getOutput(r2sf.ArrayOutput)
     dw.writeOutput()
+
+
+
 
 if __name__ == "__main__":
     print("")
@@ -234,5 +236,5 @@ if __name__ == "__main__":
     print("")
     print("Script finished sucessfully, exiting normally.")
     print("")
-    # sys.exit()
+    sys.exit()
 
