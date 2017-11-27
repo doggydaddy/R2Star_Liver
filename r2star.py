@@ -4,9 +4,12 @@ import timeit
 from timeit import default_timer as timer 
 from scipy.optimize import curve_fit
 import dicom
-import numpy
+import numpy as np
 import dicom.UID
 import datetime
+from lmfit import *
+# import tqdm
+import matplotlib.pyplot as plt
 
 class DataWrapper:
     def __init__(self, inputFolder, outputFolder):
@@ -77,7 +80,7 @@ class DataWrapper:
         # Load dimension based on the number of rows, columns, and slices
         self.ConstPixelDims = (int(self.RefDs.Rows),  int(self.RefDs.Columns), len(self.Slices), len(self.TEs))
         # The array is sized based on 'ConstPixelDims'
-        self.ArrayDicom = numpy.zeros(self.ConstPixelDims, dtype=self.RefDs.pixel_array.dtype)
+        self.ArrayDicom = np.zeros(self.ConstPixelDims, dtype=self.RefDs.pixel_array.dtype)
         # loop through all the DICOM files
         for filenameDCM in self.lstFilesDCM:
             # read the file
@@ -129,11 +132,11 @@ class DataWrapper:
         ds.HighBit = 15
         ds.BitsStored = 16
         ds.BitsAllocated = 16
-        ds.SmallestImagePixelValue = numpy.min(pixel_array)
-        ds.LargestImagePixelValue = numpy.max(pixel_array)
-        if pixel_array.dtype != numpy.uint16:
-            pixel_array = numpy.round(pixel_array, 0)
-            pixel_array = pixel_array.astype(numpy.uint16)
+        ds.SmallestImagePixelValue = np.min(pixel_array)
+        ds.LargestImagePixelValue = np.max(pixel_array)
+        if pixel_array.dtype != np.uint16:
+            pixel_array = np.round(pixel_array, 0)
+            pixel_array = pixel_array.astype(np.uint16)
         ds.PixelData = pixel_array.tostring()
         ds.save_as(filename)
 
@@ -142,55 +145,59 @@ class DataWrapper:
         if not os.path.isdir(self.outputDir):
             os.makedirs(self.outputDir)
         for i in range(0, 5):
-            filename = 'slice' + str(i+1) + '.dcm'
+            filename = '\\slice' + str(i+1) + '.dcm'
             self.writeDicomFromTemplate(self.ArrayOutput[:,:,i,1], self.outputDir+filename, self.RefSlices[i])
         print('MESSAGE: ... export completed!')
         print('')
+
+def fit_fct(params,x,y):   #cost function to minimize
+    a=params['a']
+    r2s=params['r2s']
+    N=params['N']
+    y_est=a*np.exp(-r2s*x)+N
+    return y_est - y      
+
+def fit_minimizer(x,y,seeds,lbounds,hbounds):   #lmfit optimiser
+    params=Parameters() 
+    params.add('a',value=seeds[0],min=lbounds[0],max=hbounds[0])   
+    params.add('r2s',value=seeds[1],min=lbounds[1],max=hbounds[1])   
+    params.add('N',value=seeds[2],min=lbounds[2],max=hbounds[2])   
+    minner=Minimizer(fit_fct,params,fcn_args=(x,y))
+    result = minner.minimize()
+    return result.params['a'].value,result.params['r2s'].value,result.params['N'].value
 
 class R2StarFitting:
     def __init__(self, i_nRows, i_nColumns, i_nSlices, i_TEs, i_ArrayDicom):
         self.nRows = int(i_nRows)
         self.nColumns = int(i_nColumns)
         self.nSlices = int(i_nSlices)
+        self.nvxl=self.nRows*self.nColumns*self.nSlices
         self.TEs = i_TEs
         self.ArrayDicom = i_ArrayDicom
-        OutputPixelDims = (self.nRows, self.nColumns, self.nSlices, 3)
-        self.ArrayOutput = numpy.zeros(OutputPixelDims, dtype=float)
 
-    def func(self, x, a, b, c):
-        return a * numpy.exp(-x * b) + c
-
-    def run(self):
+    def run(self):    #debug: self=r2sf   ; i=15000
         print('MESSAGE: Performing R2* fitting using non-parametric least squares ...')
         print('MESSAGE: Monoexponential with plateau')
-        x = [float(ii) for ii in self.TEs]
-        for s in range(0, self.ArrayDicom.shape[2]):
-            start = timer()
-            for i in range(0, self.ArrayDicom.shape[0]):
-                for j in range(0,  self.ArrayDicom.shape[1]):
-                    yn = self.ArrayDicom[i, j, s, :]
-                    if numpy.mean(yn[0:3]) < 10.0:
-                        self.ArrayOutput[i, j, s, :] = 0
-                    else:
-                        A_bound =  100 * numpy.mean(yn[0:2])
-                        R2Star_bound = 5.0
-                        C_bound = 10.0
-                        bounds = [A_bound,  R2Star_bound,  C_bound]
-                        try:
-                            popt, pcov = curve_fit(self.func, x, yn,  bounds=(0.0, bounds))
-                        except RuntimeError:
-                            popt = [0., 0., 0.] 
-                        self.ArrayOutput[i, j, s, 0] = popt[0]
-                        self.ArrayOutput[i, j, s, 1] = popt[1]*1000
-                        self.ArrayOutput[i, j, s, 2] = popt[2]
-            end = timer()
-            print('MESSAGE: Slice ' + str(s) + ' done! Time taken: ' + str(end - start) + ' seconds')
+        x = np.array([float(ii) for ii in self.TEs])
+        y=self.ArrayDicom.reshape(self.nvxl,len(self.TEs))
+        self.ArrayOutput=np.zeros((self.nvxl,3))
+        # for i in tqdm.tqdm(range(self.nvxl)):
+        for i in range(self.nvxl):
+            if np.mean(y[i,0:5]) < 10.0:
+                self.ArrayOutput[i] = 0
+            else:
+                seeds=[y[i,0],1,0]
+                lbounds=[0,0,-10]
+                hbounds=[100*np.mean(y[i,0:5]),5,10]  
+                a,r2s,N=fit_minimizer(x,y[i],seeds,lbounds,hbounds)
+                self.ArrayOutput[i]=a,r2s*1000,N
+        self.ArrayOutput.shape=(self.nRows,self.nColumns,self.nSlices,3)
         print('MESSAGE R2* fitting completed!')
         print('')
 
 def main(argv):
-    inputFolder = ''
-    outputFolder = ''
+    inputFolder = r'C:\Users\User\Desktop\relaxometry\test_data\Mag_t1_fl2d_15p5o_graphcut_LEVER_minDelta_tra_bh_1'
+    outputFolder = r'C:\Users\User\Desktop\relaxometry\output'
     try:
         opts, args = getopt.getopt(argv,"hi:o:",["ifile=","ofile="])
     except getopt.GetoptError:
@@ -207,7 +214,7 @@ def main(argv):
 
     print( 'Input folder is "', inputFolder )
     print( 'Output folder is "', outputFolder )
-
+    
     dw = DataWrapper(inputFolder, outputFolder)
     dw.run()
     r2sf = R2StarFitting(dw.getDims(0), dw.getDims(1), dw.getDims(2), dw.TEs, dw.ArrayDicom)
@@ -227,5 +234,5 @@ if __name__ == "__main__":
     print("")
     print("Script finished sucessfully, exiting normally.")
     print("")
-    sys.exit()
+    # sys.exit()
 
